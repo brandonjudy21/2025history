@@ -1,9 +1,13 @@
 name: Update Play-by-Play Priors
 
 on:
-  workflow_dispatch: # Lets you click a button to run it manually
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
   schedule:
-    - cron: '0 8 * * 2' # Runs automatically every Tuesday at 8:00 AM UTC
+    - cron: '0 8 * * 2'
 
 permissions:
   contents: write
@@ -16,7 +20,7 @@ jobs:
       - name: Open repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Turn on Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
