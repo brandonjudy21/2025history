@@ -1,0 +1,38 @@
+name: Update Play-by-Play Priors
+
+on:
+  workflow_dispatch: # Lets you click a button to run it manually
+  schedule:
+    - cron: '0 8 * * 2' # Runs automatically every Tuesday at 8:00 AM UTC
+
+permissions:
+  contents: write
+
+jobs:
+  build-pbp:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Open repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install tools
+        run: |
+          pip install pandas pyarrow numpy
+
+      - name: Run script
+        run: |
+          mkdir -p data
+          python scripts/build_pbp_priors.py
+
+      - name: Save new file to repository
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/pbp_2025_team_priors.csv
+          git diff --staged --quiet || (git commit -m "Auto-update 2025 PBP priors" && git push)
