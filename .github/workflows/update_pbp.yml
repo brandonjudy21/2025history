@@ -20,23 +20,83 @@ jobs:
       - name: Open repository
         uses: actions/checkout@v4
 
-      - name: Turn on Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install tools
         run: |
-          pip install pandas pyarrow numpy
+          pip install --upgrade pip
+          pip install pandas pyarrow fastparquet requests
 
-      - name: Run script
+      - name: Execute Prior Generation
         run: |
-          mkdir -p data
-          python scripts/build_pbp_priors.py
+          python - << 'EOF'
+          import os
+          import pandas as pd
+          import numpy as np
+
+          os.makedirs('data', exist_ok=True)
+          
+          # Stable nflverse release URL
+          PBP_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_2024.parquet"
+          print(f"Downloading play-by-play data from {PBP_URL}...")
+          
+          try:
+              df_raw = pd.read_parquet(PBP_URL, engine='pyarrow')
+          except Exception as e:
+              print(f"Failed with pyarrow, attempting fastparquet: {e}")
+              df_raw = pd.read_parquet(PBP_URL, engine='fastparquet')
+
+          # Filter scrimmage plays and clean game contexts
+          valid_plays = df_raw[
+              (df_raw['season_type'] == 'REG') &
+              (df_raw['play_type'].isin(['pass', 'run'])) &
+              (df_raw['epa'].notna()) &
+              (df_raw['wp'].between(0.05, 0.95)) &
+              (df_raw['down'].isin([1, 2, 3, 4]))
+          ].copy()
+
+          # Standardize relocated / renamed franchises
+          team_remap = {'OAK': 'LV', 'SD': 'LAC', 'STL': 'LAR'}
+          valid_plays['posteam'] = valid_plays['posteam'].replace(team_remap)
+          valid_plays['defteam'] = valid_plays['defteam'].replace(team_remap)
+
+          # Calculate Neutral Early-Down Pass Rate (EDPR)
+          neutral = valid_plays[
+              (valid_plays['down'].isin([1, 2])) &
+              (valid_plays['qtr'].isin([1, 2, 3])) &
+              (valid_plays['wp'].between(0.20, 0.80))
+          ]
+          edpr = neutral.groupby('posteam')['pass'].mean().rename('EARLY_DOWN_NEUTRAL_PASS_RATE')
+
+          # Calculate Offensive Metrics
+          off_stats = valid_plays.groupby('posteam').agg(
+              OFF_EPA_PLAY=('epa', 'mean'),
+              OFF_SUCCESS_RATE=('success', 'mean'),
+              OFF_PASS_EPA=('epa', lambda x: x[valid_plays.loc[x.index, 'pass'] == 1].mean()),
+              OFF_RUSH_EPA=('epa', lambda x: x[valid_plays.loc[x.index, 'rush'] == 1].mean())
+          ).reset_index().rename(columns={'posteam': 'TEAM'})
+
+          # Calculate Defensive Metrics
+          def_stats = valid_plays.groupby('defteam').agg(
+              DEF_EPA_PLAY_ALLOWED=('epa', 'mean'),
+              DEF_SUCCESS_RATE_ALLOWED=('success', 'mean'),
+              DEF_PASS_EPA_ALLOWED=('epa', lambda x: x[valid_plays.loc[x.index, 'pass'] == 1].mean()),
+              DEF_RUSH_EPA_ALLOWED=('epa', lambda x: x[valid_plays.loc[x.index, 'rush'] == 1].mean())
+          ).reset_index().rename(columns={'defteam': 'TEAM'})
+
+          # Merge, format, and export
+          df_priors = off_stats.merge(def_stats, on='TEAM').merge(edpr, left_on='TEAM', right_index=True)
+          out_path = 'data/pbp_2025_team_priors.csv'
+          df_priors.to_csv(out_path, index=False)
+          print(f"Generated {len(df_priors)} franchise records saved to {out_path}.")
+          EOF
 
       - name: Save new file to repository
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add data/pbp_2025_team_priors.csv
-          git diff --staged --quiet || (git commit -m "Auto-update 2025 PBP priors" && git push)
+          git diff --staged --quiet || (git commit -m "Auto-update 2025 PBP priors [skip ci]" && git push)
